@@ -28,14 +28,15 @@ class OneFichierManager(client : OkHttpClient) : CookieJar {
                 .post(requestBody)
                 .build()
 
-        client.newCall(request).execute()
-        //TODO check that login was valid?
+        val response = client.newCall(request).execute()
+        response.body()!!.close()
     }
 
     fun getFilesFromFolder(url: String) : List<FichierFile>? {
         val request = Request.Builder().url(url).build()
         val response = client.newCall(request).execute()
         val body = response.body()?.string() ?: return null
+        response.body()!!.close()
         val entries = Jsoup.parse(body).body().select("table.premium").select("tr")
 
         val files = List(entries.size - 1)
@@ -72,7 +73,7 @@ class OneFichierManager(client : OkHttpClient) : CookieJar {
 class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : String, val size : String) {
     lateinit var fileURL : String
 
-    fun prepareDownload(pwd: String? = null) {
+    suspend fun prepareDownload(pwd: String? = null) {
         val request : Request
         val response : Response
         if (pwd == null) {
@@ -80,7 +81,7 @@ class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : St
                     .url(baseUrl)
                     .build()
 
-            response = client.newCall(request).execute()
+            response = client.newCall(request).await()
 
         } else {
             val requestBody = MultipartBody.Builder()
@@ -93,7 +94,7 @@ class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : St
                     .post(requestBody)
                     .build()
 
-            response = client.newCall(request).execute()
+            response = client.newCall(request).await()
         }
 
         if (response.code() == 302) {
@@ -103,6 +104,7 @@ class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : St
             //TODO parse failed attempt to see what's wrong!
             println("I got a ${response.code()} while trying to get the real download URL! ${response.body()!!.string()}")
         }
+        response.body()!!.close()
     }
 
     var total = 0L
@@ -110,9 +112,10 @@ class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : St
     lateinit var input : BufferedInputStream
     lateinit var output : FileOutputStream
 
-    fun initDownload() : Long {
+    suspend fun initDownload() : Long {
+        if (!this::fileURL.isInitialized) return -1
         val request = Request.Builder().url(fileURL).build()
-        val response = client.newCall(request).execute()
+        val response = client.newCall(request).await()
         input = BufferedInputStream(response.body()!!.byteStream())
 
         return response.header("Content-Length")!!.toLong()

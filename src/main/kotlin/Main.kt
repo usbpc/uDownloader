@@ -1,11 +1,16 @@
 import com.xenomachina.argparser.ArgParser
 import com.xenomachina.argparser.default
-import kotlinx.coroutines.experimental.delay
-import kotlinx.coroutines.experimental.runBlocking
+import kotlinx.coroutines.experimental.*
+import kotlinx.coroutines.experimental.channels.Channel
 import okhttp3.*
 import java.io.File
+import java.io.IOException
 import java.lang.Exception
 import java.util.*
+import java.util.logging.Level
+import java.util.logging.Logger
+import kotlin.coroutines.experimental.CoroutineContext
+import kotlin.coroutines.experimental.suspendCoroutine
 
 class MyArgs(parser: ArgParser) {
     val username by parser.storing(
@@ -44,6 +49,7 @@ class MyArgs(parser: ArgParser) {
 
 fun main(args: Array<String>) = runBlocking {
     val parsedArgs = ArgParser(args).parseInto(::MyArgs)
+    Logger.getLogger(OkHttpClient::javaClass.name).level = Level.FINE
     val client = OkHttpClient()
 
     parsedArgs.folder.mkdirs()
@@ -84,7 +90,8 @@ fun main(args: Array<String>) = runBlocking {
                 println("Starting download of ${toAdd.name}...")
                 toAdd.prepareDownload(parsedArgs.downloadPass)
                 val file = File(parsedArgs.folder, toAdd.name)
-                if (file.length() == toAdd.initDownload()) {
+                val size = toAdd.initDownload()
+                if (file.length() == size || size == -1L) {
                     println("${toAdd.name} was already downloaded fully! Skipped!")
                     toAdd.endDownload()
                 } else {
@@ -133,6 +140,54 @@ fun main(args: Array<String>) = runBlocking {
     }
 }
 
+suspend fun Call.await() = suspendCoroutine<Response> { cont ->
+    val callback = object: Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            cont.resumeWithException(e)
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            cont.resume(response)
+        }
+    }
+    this.enqueue(callback)
+}
+
+fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBucket ,context: CoroutineContext) = launch(context) {
+    val currentFiles = mutableListOf<FichierFile>()
+    val toDelete = mutableListOf<FichierFile>()
+    var next : Deferred<FichierFile>? = null
+    while (true) {
+        if (next?.isCompleted == true) {
+            currentFiles.add(next.getCompleted())
+            next = null
+        }
+        while (currentFiles.size == threads) {
+            for (file in currentFiles) {
+                val size = file.downloadChunck()
+                limiter.useTokens(size.toLong())
+                if (size == -1) {
+                    toDelete.add(file)
+                }
+            }
+            for (file in toDelete) {
+                currentFiles.remove(file)
+                file.endDownload()
+            }
+            toDelete.clear()
+            yield()
+        }
+
+        //Start the download of one new file
+        next = async {
+            val file = channel.receive()
+            file.initDownload()
+            file
+        }
+    }
+
+}
+
 class TokenBucket(val capacity: Long, val rate: Long) {
     var current = capacity
     var lastFill = System.currentTimeMillis()
@@ -145,13 +200,13 @@ class TokenBucket(val capacity: Long, val rate: Long) {
         }
     }
 
-    suspend fun useTokens(chunckSize: Long) {
-        if (chunckSize < 0 || rate < 0) return
+    suspend fun useTokens(chunkSize: Long) {
+        if (chunkSize < 0 || rate < 0) return
         fillBucket()
-        while (current < chunckSize) {
-            delay((chunckSize - current) / rate)
+        while (current < chunkSize) {
+            delay((chunkSize - current) / rate)
             fillBucket()
         }
-        current -= chunckSize
+        current -= chunkSize
     }
 }
