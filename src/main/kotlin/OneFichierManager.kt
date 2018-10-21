@@ -69,10 +69,10 @@ class OneFichierManager(client : OkHttpClient) : CookieJar {
     }
 }
 
-class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : String, val size : String, val pwd: String? = null) {
+class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : String, val size : String) {
     lateinit var fileURL : String
 
-    fun prepareDownload() {
+    fun prepareDownload(pwd: String? = null) {
         val request : Request
         val response : Response
         if (pwd == null) {
@@ -83,9 +83,14 @@ class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : St
             response = client.newCall(request).execute()
 
         } else {
-            //TODO get thing with password
+            val requestBody = MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart("did", "0")
+                    .addFormDataPart("pass", pwd)
+                    .build()
             request = Request.Builder()
                     .url(baseUrl)
+                    .post(requestBody)
                     .build()
 
             response = client.newCall(request).execute()
