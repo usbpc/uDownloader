@@ -63,8 +63,8 @@ fun main(args: Array<String>) = runBlocking {
 
     val rawFiles = manager.getFilesFromFolder(parsedArgs.url) ?: return@runBlocking
 
-    val exists = ArrayDeque<FichierFile>()
-    val files = ArrayDeque<FichierFile>()
+    val exists = mutableListOf<FichierFile>()
+    val files = mutableListOf<FichierFile>()
     for (file in rawFiles) {
         if (file.name in existingFileNames) {
             exists.add(file)
@@ -73,71 +73,20 @@ fun main(args: Array<String>) = runBlocking {
         }
     }
 
-    val currentlyDownloading = mutableListOf<FichierFile>()
-    var lastRequest = 0L
-    while (true) {
-        //TODO maybe make is async or something to not delay downloads any further then neccecary
-        val currentTime = System.currentTimeMillis()
-        if (currentTime - lastRequest > 10L * 1000L) {
-            if (currentlyDownloading.size < parsedArgs.threads && (files.isNotEmpty() || exists.isNotEmpty())) {
-                lastRequest = currentTime
-                val toAdd : FichierFile =
-                        if (files.isNotEmpty()) {
-                            files.remove()
-                        } else {
-                            exists.remove()
-                        }
-                println("Starting download of ${toAdd.name}...")
-                toAdd.prepareDownload(parsedArgs.downloadPass)
-                val file = File(parsedArgs.folder, toAdd.name)
-                val size = toAdd.initDownload()
-                if (file.length() == size || size == -1L) {
-                    println("${toAdd.name} was already downloaded fully! Skipped!")
-                    toAdd.endDownload()
-                } else {
-                    if (file.exists()) {
-                        println("${toAdd.name} already existed but had the wrong size, redownloading...")
-                        file.delete()
-                    }
-                    toAdd.openFile(file)
-                    currentlyDownloading.add(toAdd)
-                }
+    val channel = Channel<FichierFile>()
+    val sender = files.intoChannel(channel, coroutineContext)
 
-            } else if (exists.isNotEmpty()) {
-                lastRequest = currentTime
-                val toTest = exists.remove()
-                println("Checking if ${toTest.name} is fully downloaded already!")
-                toTest.prepareDownload(parsedArgs.downloadPass)
-                val file = File(parsedArgs.folder, toTest.name)
-                if (file.length() != toTest.initDownload()) {
-                    println("${toTest.name} existed but with the wrong size, deleting and queuing to download!")
-                    file.delete()
-                    files.add(toTest)
-                } else {
-                    println("${toTest.name} was already downloaded fully, skipping!")
-                }
-                toTest.endDownload()
-            }
-        }
+    val requestLimiter = RequestLimiter()
+    val downloader = lunchDownloads(channel, parsedArgs.threads, limiter, requestLimiter, parsedArgs.folder, coroutineContext)
+    val checker = lunchChecker(parsedArgs.folder, requestLimiter, coroutineContext, exists, channel)
 
-        val toRemove = mutableListOf<FichierFile>()
+    checker.join()
+    println("All preexisting files have been checked!")
+    sender.join()
+    println("All files have been send for downloading!")
+    channel.close()
 
-        for (file in currentlyDownloading) {
-            val size = file.downloadChunck()
-            limiter.useTokens(size.toLong())
-            if (size == -1) {
-                toRemove.add(file)
-            }
-        }
-
-        for (file in toRemove) {
-            println("Done downloading ${file.name}!")
-            currentlyDownloading.remove(file)
-        }
-        if (exists.isEmpty() && files.isEmpty() && currentlyDownloading.isEmpty()) {
-            break
-        }
-    }
+    downloader.join()
 }
 
 suspend fun Call.await() = suspendCoroutine<Response> { cont ->
@@ -153,7 +102,41 @@ suspend fun Call.await() = suspendCoroutine<Response> { cont ->
     this.enqueue(callback)
 }
 
-fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBucket ,context: CoroutineContext) = launch(context) {
+fun lunchChecker(folder: File, requestLimiter: RequestLimiter, context: CoroutineContext, files: List<FichierFile>, channel: Channel<FichierFile>) = launch(context) {
+    val buffer = mutableListOf<FichierFile>()
+    for (file in files) {
+        if (buffer.isNotEmpty() && channel.offer(buffer[0])) {
+            buffer.removeAt(0)
+        }
+        requestLimiter.blah()
+        println("Checking if filesize of ${file.name} on disk matches 1fichier")
+        val diskFile = File(folder, file.name)
+        file.prepareDownload()
+        val size = file.initDownload()
+        if (size == diskFile.length()) {
+            println("It does, skipping download...")
+        } else {
+            println("It dosen't, enqueueing for download...")
+            diskFile.delete()
+            if (!channel.offer(file)) {
+                buffer.add(file)
+            }
+        }
+        file.endDownload()
+    }
+    buffer.intoChannel(channel, context).join()
+}
+
+fun <E> List<E>.intoChannel(channel: Channel<E>, context: CoroutineContext) : Job {
+    val thing = this
+    return launch(context) {
+        for (item in thing) {
+            channel.send(item)
+        }
+    }
+}
+
+fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBucket, requestLimiter: RequestLimiter, folder: File, context: CoroutineContext) = launch(context) {
     val currentFiles = mutableListOf<FichierFile>()
     val toDelete = mutableListOf<FichierFile>()
     var next : Deferred<FichierFile>? = null
@@ -162,7 +145,7 @@ fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBu
             currentFiles.add(next.getCompleted())
             next = null
         }
-        while (currentFiles.size == threads) {
+        do {
             for (file in currentFiles) {
                 val size = file.downloadChunck()
                 limiter.useTokens(size.toLong())
@@ -173,19 +156,39 @@ fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBu
             for (file in toDelete) {
                 currentFiles.remove(file)
                 file.endDownload()
+                println("Done downloading ${file.name}")
             }
             toDelete.clear()
             yield()
-        }
+        } while (currentFiles.size == threads)
 
         //Start the download of one new file
-        next = async {
-            val file = channel.receive()
-            file.initDownload()
-            file
+        if (next == null && !channel.isClosedForReceive) {
+            next = async {
+                requestLimiter.blah()
+                val toAdd = channel.receive()
+                println("Starting download of ${toAdd.name}")
+                toAdd.prepareDownload()
+                toAdd.initDownload()
+                toAdd.openFile(File(folder, toAdd.name))
+                toAdd
+            }
         }
     }
+}
 
+class RequestLimiter {
+    var lastRequest = 0L
+    suspend fun blah() {
+        val current = System.currentTimeMillis()
+        val toWait = 1000L * 10 - (current - lastRequest)
+        if (toWait > 0) {
+            lastRequest = current + toWait
+            delay(toWait)
+        } else {
+            lastRequest = current
+        }
+    }
 }
 
 class TokenBucket(val capacity: Long, val rate: Long) {
