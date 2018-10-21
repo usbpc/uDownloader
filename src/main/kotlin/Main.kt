@@ -1,5 +1,6 @@
 import com.xenomachina.argparser.ArgParser
 import com.xenomachina.argparser.default
+import kotlinx.coroutines.experimental.delay
 import kotlinx.coroutines.experimental.runBlocking
 import okhttp3.*
 import java.io.File
@@ -28,8 +29,8 @@ class MyArgs(parser: ArgParser) {
 
     val sleedlimit by parser.storing(
             "-l", "--limit",
-            help = "Sleedlimit for all downloads combined (excludes some checking and initial connections) Examples: 8Mb/1s etc."
-    ).default<String?>(null)
+            help = "Sleedlimit for all downloads combined (excludes some checking and initial connections) how many bytes per ms (8680 for google)"
+    ){this.toLong()}.default(-1)
 
     val downloadPass by parser.storing(
             "--dlPw",
@@ -46,6 +47,8 @@ fun main(args: Array<String>) = runBlocking {
     val client = OkHttpClient()
 
     parsedArgs.folder.mkdirs()
+
+    val limiter = TokenBucket(parsedArgs.sleedlimit*1000*60, parsedArgs.sleedlimit)
 
     val existingFileNames = parsedArgs.folder.listFiles { thing -> thing.exists() && !thing.isHidden && thing.isFile }.map { it.name }
 
@@ -70,7 +73,7 @@ fun main(args: Array<String>) = runBlocking {
         //TODO maybe make is async or something to not delay downloads any further then neccecary
         val currentTime = System.currentTimeMillis()
         if (currentTime - lastRequest > 10L * 1000L) {
-            if (currentlyDownloading.size < 2 && (files.isNotEmpty() || exists.isNotEmpty())) {
+            if (currentlyDownloading.size < parsedArgs.threads && (files.isNotEmpty() || exists.isNotEmpty())) {
                 lastRequest = currentTime
                 val toAdd : FichierFile =
                         if (files.isNotEmpty()) {
@@ -114,6 +117,7 @@ fun main(args: Array<String>) = runBlocking {
 
         for (file in currentlyDownloading) {
             val size = file.downloadChunck()
+            limiter.useTokens(size.toLong())
             if (size == -1) {
                 toRemove.add(file)
             }
@@ -129,6 +133,25 @@ fun main(args: Array<String>) = runBlocking {
     }
 }
 
-class TokenBuket(var capacity: Long, val rate: Long) {
-    
+class TokenBucket(val capacity: Long, val rate: Long) {
+    var current = capacity
+    var lastFill = System.currentTimeMillis()
+
+    fun fillBucket() {
+        val currentTime = System.currentTimeMillis()
+        current += (currentTime - lastFill) * rate
+        if (current > capacity) {
+            current = capacity
+        }
+    }
+
+    suspend fun useTokens(chunckSize: Long) {
+        if (chunckSize < 0 || rate < 0) return
+        fillBucket()
+        while (current < chunckSize) {
+            delay((chunckSize - current) / rate)
+            fillBucket()
+        }
+        current -= chunckSize
+    }
 }

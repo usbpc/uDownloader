@@ -1,6 +1,20 @@
+buildscript {
+    repositories {
+        jcenter()
+    }
+    dependencies {
+        classpath 'com.github.jengelman.gradle.plugins:shadow:4.0.1'
+    }
+}
+
 plugins {
     id 'org.jetbrains.kotlin.jvm' version '1.2.71'
+    id 'com.github.johnrengelman.shadow' version '4.0.1'
+    id 'java'
+    id 'application'
 }
+
+mainClassName = "MainKt"
 
 group 'xyz.usbpc.uDownlaoder'
 version '1.0-SNAPSHOT'
@@ -10,7 +24,6 @@ repositories {
     jcenter()
     maven { url "https://jitpack.io" }
 }
-
 dependencies {
     compile "org.jetbrains.kotlin:kotlin-stdlib-jdk8"
     compile "org.jetbrains.kotlinx:kotlinx-coroutines-core:0.30.2"
