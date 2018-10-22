@@ -142,7 +142,7 @@ fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBu
     var next : Deferred<FichierFile>? = null
     var bytesLoaded = 0L
     var byteTimer = System.currentTimeMillis()
-    while (!channel.isClosedForReceive && currentFiles.isNotEmpty()) {
+    while (!channel.isClosedForReceive || currentFiles.isNotEmpty()) {
         if (currentFiles.isEmpty() && next?.isActive == true) next.join()
         if (next?.isCompleted == true) {
             currentFiles.add(next.getCompleted())
@@ -185,6 +185,7 @@ fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBu
             }
         }
     }
+    println("Done downloading everything...")
 }
 
 class RequestLimiter {
