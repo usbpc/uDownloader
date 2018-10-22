@@ -58,8 +58,8 @@ fun main(args: Array<String>) = runBlocking {
 
     val existingFileNames = parsedArgs.folder.listFiles { thing -> thing.exists() && !thing.isHidden && thing.isFile }.map { it.name }
 
-    val manager = OneFichierManager(client)
-    manager.login(parsedArgs.username, parsedArgs.password)
+    val manager = OneFichierManager(client, parsedArgs.username, parsedArgs.password)
+    manager.login()
 
     val rawFiles = manager.getFilesFromFolder(parsedArgs.url) ?: return@runBlocking
 
@@ -195,7 +195,7 @@ class TokenBucket(val capacity: Long, val rate: Long) {
     var current = capacity
     var lastFill = System.currentTimeMillis()
 
-    fun fillBucket() {
+    private fun fillBucket() {
         val currentTime = System.currentTimeMillis()
         current += (currentTime - lastFill) * rate
         if (current > capacity) {
