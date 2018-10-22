@@ -140,7 +140,10 @@ fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBu
     val currentFiles = mutableListOf<FichierFile>()
     val toDelete = mutableListOf<FichierFile>()
     var next : Deferred<FichierFile>? = null
-    while (true) {
+    var bytesLoaded = 0L
+    var byteTimer = System.currentTimeMillis()
+    while (!channel.isClosedForReceive && currentFiles.isNotEmpty()) {
+        if (currentFiles.isEmpty() && next?.isActive == true) next.join()
         if (next?.isCompleted == true) {
             currentFiles.add(next.getCompleted())
             next = null
@@ -148,6 +151,7 @@ fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBu
         do {
             for (file in currentFiles) {
                 val size = file.downloadChunck()
+                bytesLoaded += size
                 limiter.useTokens(size.toLong())
                 if (size == -1) {
                     toDelete.add(file)
@@ -159,6 +163,12 @@ fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBu
                 println("Done downloading ${file.name}")
             }
             toDelete.clear()
+            val currentTime = System.currentTimeMillis()
+            if (currentTime - byteTimer >= 1000L * 60) {
+                println("I downloaded $bytesLoaded bytes in the last ${(currentTime - byteTimer) / 1000L} seconds. (${bytesLoaded/(currentTime-byteTimer)/1000L} MB/s)")
+                byteTimer = currentTime
+                bytesLoaded = 0
+            }
             yield()
         } while (currentFiles.size == threads)
 
@@ -194,6 +204,7 @@ class RequestLimiter {
 class TokenBucket(val capacity: Long, val rate: Long) {
     var current = capacity
     var lastFill = System.currentTimeMillis()
+    var lastMessage = 0L
 
     private fun fillBucket() {
         val currentTime = System.currentTimeMillis()
@@ -208,6 +219,10 @@ class TokenBucket(val capacity: Long, val rate: Long) {
         if (chunkSize < 0 || rate < 0) return
         fillBucket()
         while (current < chunkSize) {
+            if (lastFill - lastMessage < 1000L * 60) {
+                lastMessage = lastFill
+                println("Speedlimit was reached, slowing download...")
+            }
             delay((chunkSize - current) / rate)
             fillBucket()
         }
