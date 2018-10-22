@@ -3,6 +3,7 @@ import org.jsoup.Jsoup
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.lang.IllegalStateException
 import java.util.concurrent.TimeUnit
 
 class OneFichierManager(client : OkHttpClient, val usr: String, val pwd: String) : CookieJar {
@@ -10,6 +11,7 @@ class OneFichierManager(client : OkHttpClient, val usr: String, val pwd: String)
             .cookieJar(this)
             .followRedirects(false)
             .connectTimeout(1, TimeUnit.MINUTES)
+            .readTimeout(1, TimeUnit.MINUTES)
             .build()
 
     fun login() {
@@ -84,8 +86,6 @@ class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : St
                         .url(baseUrl)
                         .build()
 
-                response = client.newCall(request).await()
-
             } else {
                 val requestBody = MultipartBody.Builder()
                         .setType(MultipartBody.FORM)
@@ -96,25 +96,26 @@ class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : St
                         .url(baseUrl)
                         .post(requestBody)
                         .build()
-
-                response = client.newCall(request).await()
             }
 
+            response = client.newCall(request).await()
+            val body = response.body()
             if (response.code() == 302) {
                 //Success
                 fileURL = response.header("Location")!!
             } else if (response.code() == 200) {
-                val soup = Jsoup.parse(response.body()!!.string())
+                val bodyString = body?.string()
+                val soup = Jsoup.parse(bodyString)
                 val thing = soup.select("a[title='Login'].ui-button.ui-corner-all").firstOrNull()
                 if (thing != null) {
                     println("Login session seems to have run out, logging in again...")
                     manager.login()
                     shouldRetry = true
                 } else {
-                    println("I got a ${response.code()} while trying to get the real download URL! ${response.body()!!.string()}")
+                    println("I got a ${response.code()} while trying to get the real download URL! ${bodyString}")
                 }
             }
-            response.body()!!.close()
+            body?.close()
         } while(shouldRetry)
     }
 
