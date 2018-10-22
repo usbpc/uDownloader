@@ -1,10 +1,12 @@
 import com.xenomachina.argparser.ArgParser
+import com.xenomachina.argparser.ShowHelpException
 import com.xenomachina.argparser.default
 import kotlinx.coroutines.experimental.*
 import kotlinx.coroutines.experimental.channels.Channel
 import okhttp3.*
 import java.io.File
 import java.io.IOException
+import java.io.OutputStreamWriter
 import java.lang.Exception
 import java.text.DecimalFormat
 import java.util.*
@@ -49,7 +51,18 @@ class MyArgs(parser: ArgParser) {
 }
 
 fun main(args: Array<String>) = runBlocking {
-    val parsedArgs = ArgParser(args).parseInto(::MyArgs)
+    val parsedArgs : MyArgs
+    try {
+        parsedArgs = ArgParser(args).parseInto(::MyArgs)
+    } catch (e: ShowHelpException) {
+        val writer = OutputStreamWriter(System.out)
+        e.printUserMessage(writer, "uDownloader", 100)
+        writer.flush()
+        System.exit(e.returnCode)
+        delay(1000L)
+        return@runBlocking
+    }
+
     Logger.getLogger(OkHttpClient::javaClass.name).level = Level.FINE
     val client = OkHttpClient().newBuilder().dns(DnsSelector(DnsSelector.Mode.IPV4_ONLY)).build()
 
