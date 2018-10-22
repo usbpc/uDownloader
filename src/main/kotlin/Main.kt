@@ -201,6 +201,7 @@ class TokenBucket(val capacity: Long, val rate: Long) {
         if (current > capacity) {
             current = capacity
         }
+        lastFill = currentTime
     }
 
     suspend fun useTokens(chunkSize: Long) {
