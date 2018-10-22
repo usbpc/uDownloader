@@ -50,7 +50,7 @@ class MyArgs(parser: ArgParser) {
 fun main(args: Array<String>) = runBlocking {
     val parsedArgs = ArgParser(args).parseInto(::MyArgs)
     Logger.getLogger(OkHttpClient::javaClass.name).level = Level.FINE
-    val client = OkHttpClient()
+    val client = OkHttpClient().newBuilder().dns(DnsSelector(DnsSelector.Mode.IPV4_ONLY)).build()
 
     parsedArgs.folder.mkdirs()
 
