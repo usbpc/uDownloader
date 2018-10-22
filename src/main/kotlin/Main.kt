@@ -6,6 +6,7 @@ import okhttp3.*
 import java.io.File
 import java.io.IOException
 import java.lang.Exception
+import java.text.DecimalFormat
 import java.util.*
 import java.util.logging.Level
 import java.util.logging.Logger
@@ -137,6 +138,7 @@ fun <E> List<E>.intoChannel(channel: Channel<E>, context: CoroutineContext) : Jo
 }
 
 fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBucket, requestLimiter: RequestLimiter, folder: File, context: CoroutineContext) = launch(context) {
+    val formatter = DecimalFormat("#0.00")
     val currentFiles = mutableListOf<FichierFile>()
     val toDelete = mutableListOf<FichierFile>()
     var next : Deferred<FichierFile>? = null
@@ -165,7 +167,7 @@ fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBu
             toDelete.clear()
             val currentTime = System.currentTimeMillis()
             if (currentTime - byteTimer >= 1000L * 60) {
-                println("I downloaded $bytesLoaded bytes in the last ${(currentTime - byteTimer) / 1000L} seconds. (${bytesLoaded.toDouble()/(currentTime-byteTimer).toDouble()/1000.toDouble()} MB/s)")
+                println("I downloaded $bytesLoaded bytes in the last ${(currentTime - byteTimer) / 1000L} seconds. (${formatter.format(bytesLoaded.toDouble()/(currentTime-byteTimer).toDouble()/1000.toDouble())} MB/s)")
                 byteTimer = currentTime
                 bytesLoaded = 0
             }
