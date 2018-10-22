@@ -91,7 +91,7 @@ fun main(args: Array<String>) = runBlocking {
     val sender = files.intoChannel(channel, coroutineContext)
 
     val requestLimiter = RequestLimiter()
-    val downloader = lunchDownloads(channel, parsedArgs.threads, limiter, requestLimiter, parsedArgs.folder, coroutineContext)
+    val downloader = lunchDownloads(channel, parsedArgs.threads, limiter, requestLimiter, parsedArgs.folder, coroutineContext, parsedArgs.downloadPass)
     val checker = lunchChecker(parsedArgs.folder, requestLimiter, coroutineContext, exists, channel)
 
     checker.join()
@@ -150,7 +150,7 @@ fun <E> List<E>.intoChannel(channel: Channel<E>, context: CoroutineContext) : Jo
     }
 }
 
-fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBucket, requestLimiter: RequestLimiter, folder: File, context: CoroutineContext) = launch(context) {
+fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBucket, requestLimiter: RequestLimiter, folder: File, context: CoroutineContext, dlPwd: String?) = launch(context) {
     val formatter = DecimalFormat("#0.00")
     val currentFiles = mutableListOf<FichierFile>()
     val toDelete = mutableListOf<FichierFile>()
@@ -193,7 +193,7 @@ fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBu
                 requestLimiter.blah()
                 val toAdd = channel.receive()
                 println("Starting download of ${toAdd.name}")
-                toAdd.prepareDownload()
+                toAdd.prepareDownload(dlPwd)
                 toAdd.initDownload()
                 toAdd.openFile(File(folder, toAdd.name))
                 toAdd
