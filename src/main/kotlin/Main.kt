@@ -165,7 +165,7 @@ fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBu
             toDelete.clear()
             val currentTime = System.currentTimeMillis()
             if (currentTime - byteTimer >= 1000L * 60) {
-                println("I downloaded $bytesLoaded bytes in the last ${(currentTime - byteTimer) / 1000L} seconds. (${bytesLoaded/(currentTime-byteTimer)/1000L} MB/s)")
+                println("I downloaded $bytesLoaded bytes in the last ${(currentTime - byteTimer) / 1000L} seconds. (${bytesLoaded.toDouble()/(currentTime-byteTimer).toDouble()/1000.toDouble()} MB/s)")
                 byteTimer = currentTime
                 bytesLoaded = 0
             }
