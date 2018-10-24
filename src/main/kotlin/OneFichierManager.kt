@@ -1,10 +1,16 @@
+import kotlinx.coroutines.experimental.coroutineScope
+import kotlinx.coroutines.experimental.newFixedThreadPoolContext
+import kotlinx.coroutines.experimental.withContext
 import okhttp3.*
 import org.jsoup.Jsoup
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.lang.IllegalStateException
+import java.nio.file.Files
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.experimental.CoroutineContext
+import kotlin.coroutines.experimental.coroutineContext
 
 class OneFichierManager(client : OkHttpClient, val usr: String, val pwd: String) : CookieJar {
     val client = client.newBuilder()
@@ -34,7 +40,7 @@ class OneFichierManager(client : OkHttpClient, val usr: String, val pwd: String)
         response.body()!!.close()
     }
 
-    fun getFilesFromFolder(url: String) : List<FichierFile>? {
+    fun getFilesFromFolder(url: String, pwd: String?) : List<FichierFile>? {
         val request = Request.Builder().url(url).build()
         val response = client.newCall(request).execute()
         val body = response.body()?.string() ?: return null
@@ -48,7 +54,10 @@ class OneFichierManager(client : OkHttpClient, val usr: String, val pwd: String)
                     client,
                     current.selectFirst("a").attr("href"),
                     current.selectFirst("a").text(),
-                    current.select("td").last().text(), this)
+                    current.select("td").last().text(),
+                    this,
+                    pwd
+            )
         }
 
         return files
@@ -72,10 +81,8 @@ class OneFichierManager(client : OkHttpClient, val usr: String, val pwd: String)
     }
 }
 
-class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : String, val size : String, val manager: OneFichierManager) {
-    lateinit var fileURL : String
-
-    suspend fun prepareDownload(pwd: String? = null) {
+class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : String, val size : String, val manager: OneFichierManager, val pwd: String?) {
+    suspend fun getUrl() : String? {
         var shouldRetry : Boolean
         do {
             shouldRetry = false
@@ -102,7 +109,7 @@ class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : St
             val body = response.body()
             if (response.code() == 302) {
                 //Success
-                fileURL = response.header("Location")!!
+                return response.header("Location")!!
             } else if (response.code() == 200) {
                 val bodyString = body?.string()
                 val soup = Jsoup.parse(bodyString)
@@ -117,42 +124,26 @@ class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : St
             }
             body?.close()
         } while(shouldRetry)
+        return null
     }
 
-    var total = 0L
-    val data = ByteArray(1024)
-    lateinit var input : BufferedInputStream
-    lateinit var output : FileOutputStream
-
-    suspend fun initDownload() : Long {
-        if (!this::fileURL.isInitialized) return -1
-        val request = Request.Builder().url(fileURL).build()
-        val response = client.newCall(request).await()
-        input = BufferedInputStream(response.body()!!.byteStream())
-
-        return response.header("Content-Length")!!.toLong()
+    suspend fun getFilesize() : Long {
+        return getUrl()?.let {fileURL ->
+            val request = Request.Builder().url(fileURL).method("HEAD", null).build()
+            val response = client.newCall(request).await()
+            response.header("Content-Length")?.toLong()
+        } ?: -1
     }
 
-    fun openFile(file : File) {
-        output = FileOutputStream(file)
-    }
-
-    fun endDownload() {
-        input.close()
-        if (::output.isInitialized) {
-            output.flush()
-            output.close()
+    suspend fun download(file: File, blockingContext: CoroutineContext) {
+        getUrl()?.let { fileURL ->
+            val request = Request.Builder().url(fileURL).build()
+            val response = client.newCall(request).await()
+            val inputStream = response.body()!!.byteStream()
+            withContext(blockingContext) {
+                Files.copy(inputStream, file.toPath())
+            }
+            inputStream.close()
         }
-    }
-
-    fun downloadChunck() : Int {
-        val count = input.read(data)
-        if (count != -1) {
-            total += count
-            output.write(data, 0, count)
-        } else {
-            endDownload()
-        }
-        return count
     }
 }

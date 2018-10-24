@@ -13,6 +13,7 @@ import java.util.*
 import java.util.logging.Level
 import java.util.logging.Logger
 import kotlin.coroutines.experimental.CoroutineContext
+import kotlin.coroutines.experimental.coroutineContext
 import kotlin.coroutines.experimental.suspendCoroutine
 
 class MyArgs(parser: ArgParser) {
@@ -68,39 +69,49 @@ fun main(args: Array<String>) = runBlocking {
 
     parsedArgs.folder.mkdirs()
 
-    val limiter = TokenBucket(parsedArgs.sleedlimit*1000*60, parsedArgs.sleedlimit)
-
     val existingFileNames = parsedArgs.folder.listFiles { thing -> thing.exists() && !thing.isHidden && thing.isFile }.map { it.name }
 
     val manager = OneFichierManager(client, parsedArgs.username, parsedArgs.password)
     manager.login()
 
-    val rawFiles = manager.getFilesFromFolder(parsedArgs.url) ?: return@runBlocking
-
     val exists = mutableListOf<FichierFile>()
     val files = mutableListOf<FichierFile>()
-    for (file in rawFiles) {
-        if (file.name in existingFileNames) {
-            exists.add(file)
-        } else {
-            files.add(file)
+    manager.getFilesFromFolder(parsedArgs.url, parsedArgs.downloadPass)?.let { rawFiles ->
+        for (file in rawFiles) {
+            if (file.name in existingFileNames) {
+                exists.add(file)
+            } else {
+                files.add(file)
+            }
         }
-    }
+    } ?: return@runBlocking
 
     val channel = Channel<FichierFile>()
-    val sender = files.intoChannel(channel, coroutineContext)
+    val sender = launch {
+        files.intoChannel(channel)
+    }
 
     val requestLimiter = RequestLimiter()
-    val downloader = lunchDownloads(channel, parsedArgs.threads, limiter, requestLimiter, parsedArgs.folder, coroutineContext, parsedArgs.downloadPass)
-    val checker = lunchChecker(parsedArgs.folder, requestLimiter, coroutineContext, exists, channel)
-
+    val blockingContext = newFixedThreadPoolContext(parsedArgs.threads, "Just some throwaway threads")
+    val downloaders = List(parsedArgs.threads) {
+        launch {
+            lunchDownloads(channel, requestLimiter, parsedArgs.folder, blockingContext, parsedArgs.downloadPass)
+        }
+    }
+    val checker = launch {
+        lunchChecker(parsedArgs.folder, requestLimiter, exists, channel)
+    }
     checker.join()
     println("All preexisting files have been checked!")
     sender.join()
     println("All files have been send for downloading!")
     channel.close()
 
-    downloader.join()
+    for (downloader in downloaders) {
+        downloader.join()
+    }
+    println("Done downloading everything!")
+    blockingContext.close()
 }
 
 suspend fun Call.await() = suspendCoroutine<Response> { cont ->
@@ -116,7 +127,7 @@ suspend fun Call.await() = suspendCoroutine<Response> { cont ->
     this.enqueue(callback)
 }
 
-fun lunchChecker(folder: File, requestLimiter: RequestLimiter, context: CoroutineContext, files: List<FichierFile>, channel: Channel<FichierFile>) = launch(context) {
+suspend fun lunchChecker(folder: File, requestLimiter: RequestLimiter, files: List<FichierFile>, channel: Channel<FichierFile>)  {
     val buffer = mutableListOf<FichierFile>()
     for (file in files) {
         if (buffer.isNotEmpty() && channel.offer(buffer[0])) {
@@ -125,8 +136,7 @@ fun lunchChecker(folder: File, requestLimiter: RequestLimiter, context: Coroutin
         requestLimiter.blah()
         println("Checking if filesize of ${file.name} on disk matches 1fichier")
         val diskFile = File(folder, file.name)
-        file.prepareDownload()
-        val size = file.initDownload()
+        val size = file.getFilesize()
         if (size == diskFile.length()) {
             println("It does, skipping download...")
         } else {
@@ -136,71 +146,31 @@ fun lunchChecker(folder: File, requestLimiter: RequestLimiter, context: Coroutin
                 buffer.add(file)
             }
         }
-        file.endDownload()
     }
-    buffer.intoChannel(channel, context).join()
-}
-
-fun <E> List<E>.intoChannel(channel: Channel<E>, context: CoroutineContext) : Job {
-    val thing = this
-    return launch(context) {
-        for (item in thing) {
-            channel.send(item)
-        }
+    coroutineScope {
+        launch {
+            buffer.intoChannel(channel)
+        }.join()
     }
 }
 
-fun lunchDownloads(channel: Channel<FichierFile>, threads: Int, limiter: TokenBucket, requestLimiter: RequestLimiter, folder: File, context: CoroutineContext, dlPwd: String?) = launch(context) {
-    val formatter = DecimalFormat("#0.00")
-    val currentFiles = mutableListOf<FichierFile>()
-    val toDelete = mutableListOf<FichierFile>()
-    var next : Deferred<FichierFile>? = null
-    var bytesLoaded = 0L
-    var byteTimer = System.currentTimeMillis()
-    while (!channel.isClosedForReceive || currentFiles.isNotEmpty()) {
-        if (currentFiles.isEmpty() && next?.isActive == true) next.join()
-        if (next?.isCompleted == true) {
-            currentFiles.add(next.getCompleted())
-            next = null
-        }
-        do {
-            for (file in currentFiles) {
-                val size = file.downloadChunck()
-                bytesLoaded += size
-                limiter.useTokens(size.toLong())
-                if (size == -1) {
-                    toDelete.add(file)
-                }
-            }
-            for (file in toDelete) {
-                currentFiles.remove(file)
-                file.endDownload()
-                println("Done downloading ${file.name}")
-            }
-            toDelete.clear()
-            val currentTime = System.currentTimeMillis()
-            if (currentTime - byteTimer >= 1000L * 60) {
-                println("I downloaded $bytesLoaded bytes in the last ${(currentTime - byteTimer) / 1000L} seconds. (${formatter.format(bytesLoaded.toDouble()/(currentTime-byteTimer).toDouble()/1000.toDouble())} MB/s)")
-                byteTimer = currentTime
-                bytesLoaded = 0
-            }
-            yield()
-        } while (currentFiles.size == threads)
 
-        //Start the download of one new file
-        if (next == null && !channel.isClosedForReceive) {
-            next = async {
-                requestLimiter.blah()
-                val toAdd = channel.receive()
-                println("Starting download of ${toAdd.name}")
-                toAdd.prepareDownload(dlPwd)
-                toAdd.initDownload()
-                toAdd.openFile(File(folder, toAdd.name))
-                toAdd
-            }
-        }
+
+suspend fun <E> List<E>.intoChannel(channel: Channel<E>) {
+    for (item in this) {
+        channel.send(item)
     }
-    println("Done downloading everything...")
+}
+
+
+
+suspend fun lunchDownloads(channel: Channel<FichierFile>, requestLimiter: RequestLimiter, folder: File, blockingContext: CoroutineContext, dlPwd: String?) {
+    for (file in channel) {
+        requestLimiter.blah()
+        println("Starting download of ${file.name}")
+        file.download(File(folder, file.name), blockingContext)
+        println("Done downloading ${file.name}")
+    }
 }
 
 class RequestLimiter {
