@@ -1,3 +1,4 @@
+import com.sun.istack.internal.logging.Logger
 import com.xenomachina.argparser.ArgParser
 import com.xenomachina.argparser.ShowHelpException
 import com.xenomachina.argparser.default
@@ -7,13 +8,8 @@ import okhttp3.*
 import java.io.File
 import java.io.IOException
 import java.io.OutputStreamWriter
-import java.lang.Exception
-import java.text.DecimalFormat
-import java.util.*
 import java.util.logging.Level
-import java.util.logging.Logger
 import kotlin.coroutines.experimental.CoroutineContext
-import kotlin.coroutines.experimental.coroutineContext
 import kotlin.coroutines.experimental.suspendCoroutine
 
 class MyArgs(parser: ArgParser) {
@@ -64,7 +60,7 @@ fun main(args: Array<String>) = runBlocking {
         return@runBlocking
     }
 
-    Logger.getLogger(OkHttpClient::javaClass.name).level = Level.FINE
+    Logger.getLogger(OkHttpClient::class.java).setLevel(Level.FINE)
     val client = OkHttpClient().newBuilder().dns(DnsSelector(DnsSelector.Mode.IPV4_ONLY)).build()
 
     parsedArgs.folder.mkdirs()

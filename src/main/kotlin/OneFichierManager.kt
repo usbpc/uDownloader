@@ -1,16 +1,10 @@
-import kotlinx.coroutines.experimental.coroutineScope
-import kotlinx.coroutines.experimental.newFixedThreadPoolContext
 import kotlinx.coroutines.experimental.withContext
 import okhttp3.*
 import org.jsoup.Jsoup
-import java.io.BufferedInputStream
 import java.io.File
-import java.io.FileOutputStream
-import java.lang.IllegalStateException
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.experimental.CoroutineContext
-import kotlin.coroutines.experimental.coroutineContext
 
 class OneFichierManager(client : OkHttpClient, val usr: String, val pwd: String) : CookieJar {
     val client = client.newBuilder()
@@ -20,8 +14,7 @@ class OneFichierManager(client : OkHttpClient, val usr: String, val pwd: String)
             .readTimeout(1, TimeUnit.MINUTES)
             .build()
 
-    fun login() {
-
+    suspend fun login() {
         val requestBody = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("lt", "on")
@@ -36,15 +29,14 @@ class OneFichierManager(client : OkHttpClient, val usr: String, val pwd: String)
                 .post(requestBody)
                 .build()
 
-        val response = client.newCall(request).execute()
-        response.body()!!.close()
+        client.newCall(request).await().close()
     }
 
-    fun getFilesFromFolder(url: String, pwd: String?) : List<FichierFile>? {
+    suspend fun getFilesFromFolder(url: String, pwd: String?) : List<FichierFile>? {
         val request = Request.Builder().url(url).build()
-        val response = client.newCall(request).execute()
+        val response = client.newCall(request).await()
         val body = response.body()?.string() ?: return null
-        response.body()!!.close()
+        response.close()
         val entries = Jsoup.parse(body).body().select("table.premium").select("tr")
 
         val files = List(entries.size - 1)
@@ -109,6 +101,7 @@ class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : St
             val body = response.body()
             if (response.code() == 302) {
                 //Success
+                response.close()
                 return response.header("Location")!!
             } else if (response.code() == 200) {
                 val bodyString = body?.string()
@@ -122,7 +115,7 @@ class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : St
                     println("I got a ${response.code()} while trying to get the real download URL! ${bodyString}")
                 }
             }
-            body?.close()
+            body!!.close()
         } while(shouldRetry)
         return null
     }
@@ -131,6 +124,7 @@ class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : St
         return getUrl()?.let {fileURL ->
             val request = Request.Builder().url(fileURL).method("HEAD", null).build()
             val response = client.newCall(request).await()
+            response.close()
             response.header("Content-Length")?.toLong()
         } ?: -1
     }
