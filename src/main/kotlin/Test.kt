@@ -17,51 +17,59 @@ fun main(args: Array<String>) {
     file.delete()
 
     val client = HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)
             .connectTimeout(Duration.ofSeconds(10))
             .build()
 
     val request = HttpRequest.newBuilder()
-            .url("https://o-5.1fichier.com/p86019894")
-            //.url("https://speed.hetzner.de/10GB.bin")
+            //.url("https://o-5.1fichier.com/p86046295")
+            //.url("https://doc-0k-b0-docs.googleusercontent.com/docs/securesc/ha0ro937gcuc7l7deffksulhg5h7mbp1/cqgfb52e0s1l6j3pm4qmeqas5je95qn3/1540382400000/12882897270351256762/*/1xhGYSODIhIsGrC7qkx4fq1bqghXgr81c?e=download")
+            //.url("https://briareus.feralhosting.com/mattpalm/Film/Mandy.2018.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTG.mkv")
+            //.url("http://localhost/test.bin")
+            .url("https://map.usbcraft.net/file/usbpc-downloads/java_http_client.fail")
             .build()
 
     println("Starting download...")
+    client.send
     client.send(request) {info ->
-        println("Got headers back ${info.headers()}, Status code ${info.statusCode()}")
+        println("Version: ${info.version()} Status code ${info.statusCode()} Got headers back ${info.headers()}")
+        println("Content-Length parsed to int: ${info.headers().get("content-length")?.toLong()?.toInt()}")
+        predictFailure(info)
         val responseHandler = HttpResponse.BodyHandlers.ofFile(file.toPath())
         MySubscriber(responseHandler.apply(info))
     }
     println("Done with download...")
+
+}
+
+fun predictFailure(info: HttpResponse.ResponseInfo) {
+    if (info.version() == HttpClient.Version.HTTP_1_1) {
+        val length = info.headers().get("content-length")?.toLong()?.toInt() ?: 0
+        if (length <= -3) {
+            println("Download will fail")
+            return
+        }
+    }
+    println("Download will work")
 }
 
 class MySubscriber(val subscriber: HttpResponse.BodySubscriber<Path>) : HttpResponse.BodySubscriber<Path> {
-    private var counter = 0
-    private var total = 0L
     override fun onComplete() {
-        println("Total bytes: $total")
+        println("onComplete")
         subscriber.onComplete()
     }
-
     override fun onSubscribe(subscription: Flow.Subscription?) {
         println("onSubscribe")
         subscriber.onSubscribe(subscription)
     }
-
     override fun onNext(item: MutableList<ByteBuffer>) {
-        println("Got data!")
-        item.forEach { size ->
-            println("I got ${size.remaining()} bytes ($counter)")
-            total += size.remaining()
-        }
-        counter++
+        println("onNext")
         subscriber.onNext(item)
     }
-
     override fun onError(throwable: Throwable) {
         println("I got an error ${throwable.localizedMessage}")
         subscriber.onError(throwable)
     }
-
     override fun getBody(): CompletionStage<Path> {
         return subscriber.body
     }
