@@ -4,12 +4,19 @@ import com.xenomachina.argparser.ShowHelpException
 import com.xenomachina.argparser.default
 import kotlinx.coroutines.experimental.*
 import kotlinx.coroutines.experimental.channels.Channel
+import kotlinx.coroutines.experimental.channels.ReceiveChannel
+import kotlinx.coroutines.experimental.channels.SendChannel
 import okhttp3.*
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.io.OutputStreamWriter
+import java.lang.Exception
+import java.lang.IllegalStateException
+import java.nio.channels.AsynchronousFileChannel
 import java.util.logging.Level
 import kotlin.coroutines.experimental.CoroutineContext
+import kotlin.coroutines.experimental.coroutineContext
 import kotlin.coroutines.experimental.suspendCoroutine
 
 class MyArgs(parser: ArgParser) {
@@ -68,7 +75,6 @@ fun main(args: Array<String>) = runBlocking {
     val existingFileNames = parsedArgs.folder.listFiles { thing -> thing.exists() && !thing.isHidden && thing.isFile }.map { it.name }
 
     val manager = OneFichierManager(client, parsedArgs.username, parsedArgs.password)
-    manager.login()
 
     val exists = mutableListOf<FichierFile>()
     val files = mutableListOf<FichierFile>()
@@ -90,13 +96,11 @@ fun main(args: Array<String>) = runBlocking {
     val requestLimiter = RequestLimiter()
     val blockingContext = newFixedThreadPoolContext(parsedArgs.threads, "Just some throwaway threads")
     val downloaders = List(parsedArgs.threads) {
-        launch {
-            lunchDownloads(channel, requestLimiter, parsedArgs.folder, blockingContext, parsedArgs.downloadPass)
-        }
+        lunchDownloads(channel, requestLimiter, parsedArgs.folder, blockingContext)
     }
-    val checker = launch {
-        lunchChecker(parsedArgs.folder, requestLimiter, exists, channel)
-    }
+
+    val checker = lunchChecker(parsedArgs.folder, requestLimiter, exists, channel)
+
     checker.join()
     println("All preexisting files have been checked!")
     sender.join()
@@ -123,7 +127,17 @@ suspend fun Call.await() = suspendCoroutine<Response> { cont ->
     this.enqueue(callback)
 }
 
-suspend fun lunchChecker(folder: File, requestLimiter: RequestLimiter, files: List<FichierFile>, channel: Channel<FichierFile>)  {
+data class RetryFichier(val file: FichierFile, val seconds: Int)
+
+fun CoroutineScope.retrySender(send: SendChannel<FichierFile>, recive: ReceiveChannel<FichierFile>) = launch {
+    for (file in recive) {
+        launch {
+            send.send(file)
+        }
+    }
+}
+
+fun CoroutineScope.lunchChecker(folder: File, requestLimiter: RequestLimiter, files: List<FichierFile>, channel: Channel<FichierFile>) = launch {
     val buffer = mutableListOf<FichierFile>()
     for (file in files) {
         if (buffer.isNotEmpty() && channel.offer(buffer[0])) {
@@ -132,22 +146,27 @@ suspend fun lunchChecker(folder: File, requestLimiter: RequestLimiter, files: Li
         requestLimiter.blah()
         println("Checking if filesize of ${file.name} on disk matches 1fichier")
         val diskFile = File(folder, file.name)
-        val size = file.getFilesize()
-        if (size == diskFile.length()) {
-            println("It does, skipping download...")
-        } else {
-            println("It dosen't, enqueueing for download...")
-            diskFile.delete()
-            if (!channel.offer(file)) {
-                buffer.add(file)
+        try {
+            val size = file.getFilesize()
+
+            if (size == diskFile.length()) {
+                println("It does, skipping download...")
+            } else {
+                println("It dosen't, enqueueing for download...")
+                diskFile.delete()
+                if (!channel.offer(file)) {
+                    buffer.add(file)
+                }
             }
+        } catch (e: IllegalStateException) {
+            println("ERROR: ${file.name} with ${file.baseUrl} timed out too often while trying to check it's size.")
+            e.printStackTrace(System.out)
+        } catch (e: Exception) {
+            println("ERROR: Unexpected exception while trying to check size of ${file.name} with ${file.baseUrl}")
+            e.printStackTrace(System.out)
         }
     }
-    coroutineScope {
-        launch {
-            buffer.intoChannel(channel)
-        }.join()
-    }
+    buffer.intoChannel(channel)
 }
 
 
@@ -158,14 +177,20 @@ suspend fun <E> List<E>.intoChannel(channel: Channel<E>) {
     }
 }
 
-
-
-suspend fun lunchDownloads(channel: Channel<FichierFile>, requestLimiter: RequestLimiter, folder: File, blockingContext: CoroutineContext, dlPwd: String?) {
+fun CoroutineScope.lunchDownloads(channel: Channel<FichierFile>, requestLimiter: RequestLimiter, folder: File, blockingContext: CoroutineContext) = launch {
     for (file in channel) {
         requestLimiter.blah()
         println("Starting download of ${file.name}")
-        file.download(File(folder, file.name), blockingContext)
-        println("Done downloading ${file.name}")
+        try {
+            file.download(File(folder, file.name), blockingContext)
+            println("Done downloading ${file.name}")
+        } catch (e: IllegalStateException) {
+            println("ERROR: ${file.name} with ${file.baseUrl} timed out too often while trying to download it")
+            e.printStackTrace(System.out)
+        } catch (e: Exception) {
+            println("ERROR: Unexpected exception while trying to download ${file.name} with ${file.baseUrl}")
+            e.printStackTrace(System.out)
+        }
     }
 }
 
@@ -211,3 +236,12 @@ class TokenBucket(val capacity: Long, val rate: Long) {
         current -= chunkSize
     }
 }
+
+class LimitedInputStream(val backingStream : InputStream) : InputStream() {
+    override fun read(): Int {
+        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
+    }
+
+}
+
+
