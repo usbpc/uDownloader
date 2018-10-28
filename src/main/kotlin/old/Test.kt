@@ -1,11 +1,10 @@
+package old
+
 import kotlinx.coroutines.experimental.*
 import kotlinx.coroutines.experimental.channels.ReceiveChannel
 import kotlinx.coroutines.experimental.channels.SendChannel
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import java.lang.Exception
 import java.lang.IllegalStateException
-import kotlin.coroutines.experimental.CoroutineContext
 
 fun CoroutineScope.rateLimiter(tokens: SendChannel<Unit>, rate: Int) = launch {
     var lastToken = System.currentTimeMillis()
@@ -20,7 +19,7 @@ fun CoroutineScope.rateLimiter(tokens: SendChannel<Unit>, rate: Int) = launch {
 
 fun CoroutineScope.request(tokens: ReceiveChannel<Unit>) = launch {
     for (token in tokens) {
-        //Do Web request
+        //Do Web old.request
     }
 }
 

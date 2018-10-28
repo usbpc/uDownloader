@@ -1,3 +1,6 @@
+package old
+
+import DnsSelector
 import com.sun.istack.internal.logging.Logger
 import com.xenomachina.argparser.ArgParser
 import com.xenomachina.argparser.ShowHelpException
@@ -13,10 +16,8 @@ import java.io.InputStream
 import java.io.OutputStreamWriter
 import java.lang.Exception
 import java.lang.IllegalStateException
-import java.nio.channels.AsynchronousFileChannel
 import java.util.logging.Level
 import kotlin.coroutines.experimental.CoroutineContext
-import kotlin.coroutines.experimental.coroutineContext
 import kotlin.coroutines.experimental.suspendCoroutine
 
 class MyArgs(parser: ArgParser) {
@@ -112,19 +113,6 @@ fun main(args: Array<String>) = runBlocking {
     }
     println("Done downloading everything!")
     blockingContext.close()
-}
-
-suspend fun Call.await() = suspendCoroutine<Response> { cont ->
-    val callback = object: Callback {
-        override fun onFailure(call: Call, e: IOException) {
-            cont.resumeWithException(e)
-        }
-
-        override fun onResponse(call: Call, response: Response) {
-            cont.resume(response)
-        }
-    }
-    this.enqueue(callback)
 }
 
 data class RetryFichier(val file: FichierFile, val seconds: Int)

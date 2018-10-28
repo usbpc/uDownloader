@@ -1,20 +1,27 @@
+package xyz.usbpc.uDownloader.hosts
+
+import kotlinx.coroutines.experimental.Dispatchers
+import kotlinx.coroutines.experimental.channels.ReceiveChannel
+import kotlinx.coroutines.experimental.channels.TickerMode
+import kotlinx.coroutines.experimental.channels.ticker
 import kotlinx.coroutines.experimental.withContext
 import okhttp3.*
 import org.jsoup.Jsoup
+import xyz.usbpc.kotlin.utils.await
 import java.io.File
-import java.lang.Exception
-import java.net.SocketTimeoutException
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit
-import kotlin.coroutines.experimental.CoroutineContext
 
 class OneFichierManager(client : OkHttpClient, val usr: String, val pwd: String) : CookieJar {
+
     val client = client.newBuilder()
             .cookieJar(this)
             .followRedirects(false)
             .connectTimeout(1, TimeUnit.MINUTES)
             .readTimeout(1, TimeUnit.MINUTES)
             .build()
+
+    private val ticker = ticker(1000L * 10, 0, mode = TickerMode.FIXED_DELAY)
 
     suspend fun login() {
         val requestBody = MultipartBody.Builder()
@@ -31,28 +38,28 @@ class OneFichierManager(client : OkHttpClient, val usr: String, val pwd: String)
                 .post(requestBody)
                 .build()
 
-        retry(3) { client.newCall(request).await() }.close()
+        client.newCall(request).await().close()
     }
 
-    suspend fun getFilesFromFolder(url: String, pwd: String?) : List<FichierFile>? {
+    suspend fun getFilesFromFolder(url: String, folder: File, pwd: String?) : List<OneFichierFile>? {
         val request = Request.Builder().url(url).build()
-        retry(3) { client.newCall(request).await() }.use { response ->
+        client.newCall(request).await().use { response ->
             val body = response.body()?.string() ?: return null
             val entries = Jsoup.parse(body).body().select("table.premium").select("tr")
-            val files = List(entries.size - 1)
+            return List(entries.size - 1)
             { elem ->
                 val current = entries[elem + 1]
-                FichierFile(
+                OneFichierFile(
                         client,
                         current.selectFirst("a").attr("href"),
                         current.selectFirst("a").text(),
                         current.select("td").last().text(),
                         this,
-                        pwd
+                        folder,
+                        pwd,
+                        ticker
                 )
             }
-
-            return files
         }
     }
 
@@ -74,7 +81,7 @@ class OneFichierManager(client : OkHttpClient, val usr: String, val pwd: String)
     }
 }
 
-class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : String, val size : String, val manager: OneFichierManager, val pwd: String?) {
+class OneFichierFile(val client: OkHttpClient, val baseUrl : String, val name : String, val size : String, val manager: OneFichierManager, val file: File, val pwd: String?, private val ticker: ReceiveChannel<Unit>) {
     private suspend fun getUrl() : String? {
         var shouldRetry : Boolean
         do {
@@ -96,7 +103,7 @@ class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : St
                         .post(requestBody)
                         .build()
             }
-            retry(3) { client.newCall(request).await() }.use { response ->
+            client.newCall(request).await().use { response ->
                 val body = response.body()
                 if (response.code() == 302) {
                     return response.header("Location")!!
@@ -120,18 +127,20 @@ class FichierFile( val client: OkHttpClient, val baseUrl : String, val name : St
     suspend fun getFilesize() : Long {
         return getUrl()?.let {fileURL ->
             val request = Request.Builder().url(fileURL).method("HEAD", null).build()
-            retry(3) { client.newCall(request).await() }.use { response ->
+            ticker.receive()
+            client.newCall(request).await().use { response ->
                 response.header("Content-Length")?.toLong()
             }
         } ?: -1
     }
 
-    suspend fun download(file: File, blockingContext: CoroutineContext) {
+    suspend fun download() {
         getUrl()?.let { fileURL ->
             val request = Request.Builder().url(fileURL).build()
-            retry(3) { client.newCall(request).await() }.use { response ->
+            ticker.receive()
+            client.newCall(request).await().use { response ->
                 val inputStream = response.body()!!.byteStream()
-                withContext(blockingContext) {
+                withContext(Dispatchers.IO) {
                     Files.copy(inputStream, file.toPath())
                 }
             }
