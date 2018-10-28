@@ -19,21 +19,27 @@ fun CoroutineScope.folderWorker(
         toCheckers: SendChannel<ReceiveChannel<OneFichierFile>>,
         toDownloaders: SendChannel<ReceiveChannel<OneFichierFile>>)
         = launch {
+    val checkerBuffer = Channel<ReceiveChannel<OneFichierFile>>()
+    aggregateSender(checkerBuffer, toCheckers)
     for (line in receiveChannel) {
         oneFichierManager.getFilesFromFolder(line.url, line.directory, line.password)?.let { files ->
             val exist = mutableListOf<OneFichierFile>()
             val new = mutableListOf<OneFichierFile>()
-            files.forEach { file ->
-                if (file.file.exists()) exist.add(file) else new.add(file)
+            withContext(Dispatchers.IO) {
+                files.forEach { file ->
+                    if (file.file.exists()) exist.add(file) else new.add(file)
+                }
             }
             val checkerChannel = Channel<OneFichierFile>()
             val downloaderChannel = Channel<OneFichierFile>()
             sendListThenClose(exist, checkerChannel)
             sendListThenClose(new, downloaderChannel)
-            toCheckers.send(checkerChannel)
+            checkerBuffer.send(checkerChannel)
             toDownloaders.send(downloaderChannel)
         }
     }
+    checkerBuffer.close()
+    toDownloaders.close()
 }
 
 data class ConfigLine(val url: String, val directory: File, val password: String?)
@@ -42,7 +48,7 @@ fun CoroutineScope.configWorker(config: File, sendChannel: SendChannel<ConfigLin
     for (line in config.readLines()) {
         line.split("\t").let { parts ->
             if (parts.size < 2) {
-                println("$line is not valid")
+                println("ERROR: $line is not valid")
                 null
             } else {
                 val url = parts[0]
@@ -54,6 +60,7 @@ fun CoroutineScope.configWorker(config: File, sendChannel: SendChannel<ConfigLin
             sendChannel.send(configLine)
         }
     }
+    sendChannel.close()
 }
 
 fun <E> CoroutineScope.aggregateSender(ingress: ReceiveChannel<E>, egress: SendChannel<E>) = launch {
@@ -75,8 +82,11 @@ fun <E> CoroutineScope.aggregateSender(ingress: ReceiveChannel<E>, egress: SendC
                         items.add(item)
                     }
                 }
-            } catch (_: ClosedReceiveChannelException) { }
+            } catch (_: ClosedReceiveChannelException) {
+            }
         }
     }
     sendListThenClose(items, egress)
 }
+
+

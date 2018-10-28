@@ -14,7 +14,7 @@ plugins {
     id 'application'
 }
 
-mainClassName = "MainKt"
+mainClassName = "xyz.usbpc.uDownloader.main.MainKt"
 
 group 'xyz.usbpc.uDownlaoder'
 version '1.0-SNAPSHOT'

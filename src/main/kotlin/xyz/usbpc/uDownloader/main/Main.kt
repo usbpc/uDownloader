@@ -42,8 +42,9 @@ class uDownloader() : CoroutineScope {
 
         val folderWorker = folderWorker(oneFichierManager, fileChannel, checkersChannel, fileDownloadersCh)
 
-        val checkerManager = CheckerManager(job, 1, checkersChannel, checkersDownloadersCh)
+        val checkerManager = CheckerManager(job, 1, checkersChannel, checkersDownloadersCh) /* <-- this closes channels it's not supposed to */
         checkerManager.start()
+
 
         val downloaderManager = DownloadManager(job, parsedArgs.threads, fileDownloadersCh, checkersDownloadersCh)
         downloaderManager.start()
@@ -52,7 +53,7 @@ class uDownloader() : CoroutineScope {
             folderWorker.join()
             println("INFO: Folder worker done")
             checkerManager.join()
-            println("INTO: Checker manager done")
+            println("INFO: Checker manager done")
             checkerManager.cancel()
 
 
@@ -60,5 +61,7 @@ class uDownloader() : CoroutineScope {
             downloaderManager.cancel()
             println("INFO: Downloader manager done")
         }
+
+
     }
 }

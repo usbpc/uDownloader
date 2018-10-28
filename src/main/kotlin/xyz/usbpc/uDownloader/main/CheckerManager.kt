@@ -1,16 +1,14 @@
 package xyz.usbpc.uDownloader.main
 
-import kotlinx.coroutines.experimental.CoroutineScope
-import kotlinx.coroutines.experimental.Dispatchers
-import kotlinx.coroutines.experimental.Job
+import kotlinx.coroutines.experimental.*
 import kotlinx.coroutines.experimental.channels.Channel
 import kotlinx.coroutines.experimental.channels.ReceiveChannel
 import kotlinx.coroutines.experimental.channels.SendChannel
-import kotlinx.coroutines.experimental.launch
+import kotlinx.coroutines.experimental.selects.select
 import xyz.usbpc.kotlin.utils.CounterActor
 import xyz.usbpc.kotlin.utils.WithCount
 import xyz.usbpc.kotlin.utils.createCounterActor
-import xyz.usbpc.kotlin.utils.getOneFrom
+import xyz.usbpc.kotlin.utils.unpackChannel
 import xyz.usbpc.uDownloader.hosts.OneFichierFile
 import java.lang.Exception
 import kotlin.coroutines.experimental.CoroutineContext
@@ -34,11 +32,11 @@ class CheckerManager(parent: Job, val num: Int = 1,
 
     fun start() {
         println("INFO: Starting up checkers")
-        returns = Channel()
+        returns = Channel(1)
         checkerChannel = Channel()
         needsDownload = Channel()
 
-        checkerQueueManager = checkerQueueManager(counter, checkerChannel, ingress, returns)
+        checkerQueueManager = checkerQueueManager(counter, checkerChannel, unpackChannel(ingress), returns)
         checkers = List(num) {
             checker(counter, checkerChannel, returns, needsDownload)
         }
@@ -53,6 +51,9 @@ class CheckerManager(parent: Job, val num: Int = 1,
 
         checkers.forEach { it.join() }
         println("INFO: All checkers are shut down")
+
+        needsDownload.close()
+        println("INFO: Closed needsDownload channel")
 
         returns.close()
         println("INFO: Returns channel for checkers is shut down")
@@ -72,31 +73,31 @@ class CheckerManager(parent: Job, val num: Int = 1,
     private fun checkerQueueManager(
             counter: CounterActor,
             toCheckers: SendChannel<WithCount<OneFichierFile>>,
-            channels: ReceiveChannel<ReceiveChannel<OneFichierFile>>, /* <-- this will close at some point*/
+            ingress: ReceiveChannel<OneFichierFile>, /* <-- this will close at some point*/
             returns: ReceiveChannel<WithCount<OneFichierFile>>
     ) = launch {
-        var currentReturn = getOneFrom(returns)
-        for (channel in channels) {
-            while (!channel.isClosedForReceive) {
-                if (!currentReturn.isCompleted) {
-                    toCheckers.send(WithCount(channel.receive()))
-                    counter.inc()
-                } else {
-                    currentReturn.getCompleted().let {item ->
-                        currentReturn = getOneFrom(returns)
-                        item.count++
-                        toCheckers.send(item)
+        while (isActive && (!ingress.isClosedForReceive || !returns.isClosedForReceive)) {
+            select<WithCount<OneFichierFile>> {
+                if (!returns.isClosedForReceive) {
+                    returns.onReceive {
+                        it.count++
+                        it
                     }
                 }
+                if (!ingress.isClosedForReceive) {
+                    ingress.onReceive {
+                        counter.inc()
+                        WithCount(it)
+                    }
+                }
+            }.let { current ->
+                if (current.count <= 50) {
+                    toCheckers.send(current)
+                } else {
+                    counter.dec()
+                    println("DROPPED: Checking \"${current.item}\" failed, too many retries!")
+                }
             }
-        }
-        currentReturn.await().let { retry ->
-            retry.count++
-            toCheckers.send(retry)
-        }
-        for (retry in returns) {
-            retry.count++
-            toCheckers.send(retry)
         }
         toCheckers.close()
     }
@@ -134,6 +135,7 @@ class CheckerManager(parent: Job, val num: Int = 1,
             e.printStackTrace(System.out)
             return FileStatus.RETRY
         }
+        println("DONE: Checking of \"${file.item.name}\" finished successfully")
         return FileStatus.DONE
     }
 

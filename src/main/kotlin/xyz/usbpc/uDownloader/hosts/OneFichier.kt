@@ -23,6 +23,7 @@ class OneFichierManager(client : OkHttpClient, val usr: String, val pwd: String)
 
     private val ticker = ticker(1000L * 10, 0, mode = TickerMode.FIXED_DELAY)
 
+    //TODO make it so it dosen't try to log in too often right away
     suspend fun login() {
         val requestBody = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
@@ -46,6 +47,8 @@ class OneFichierManager(client : OkHttpClient, val usr: String, val pwd: String)
         client.newCall(request).await().use { response ->
             val body = response.body()?.string() ?: return null
             val entries = Jsoup.parse(body).body().select("table.premium").select("tr")
+            if (!folder.exists())
+                folder.mkdirs()
             return List(entries.size - 1)
             { elem ->
                 val current = entries[elem + 1]
@@ -81,7 +84,8 @@ class OneFichierManager(client : OkHttpClient, val usr: String, val pwd: String)
     }
 }
 
-class OneFichierFile(val client: OkHttpClient, val baseUrl : String, val name : String, val size : String, val manager: OneFichierManager, val file: File, val pwd: String?, private val ticker: ReceiveChannel<Unit>) {
+class OneFichierFile(val client: OkHttpClient, val baseUrl : String, val name : String, val size : String, val manager: OneFichierManager, folder: File, val pwd: String?, private val ticker: ReceiveChannel<Unit>) {
+    val file = File(folder, name)
     private suspend fun getUrl() : String? {
         var shouldRetry : Boolean
         do {
@@ -125,9 +129,9 @@ class OneFichierFile(val client: OkHttpClient, val baseUrl : String, val name : 
     }
 
     suspend fun getFilesize() : Long {
+        ticker.receive()
         return getUrl()?.let {fileURL ->
             val request = Request.Builder().url(fileURL).method("HEAD", null).build()
-            ticker.receive()
             client.newCall(request).await().use { response ->
                 response.header("Content-Length")?.toLong()
             }
@@ -135,9 +139,9 @@ class OneFichierFile(val client: OkHttpClient, val baseUrl : String, val name : 
     }
 
     suspend fun download() {
+        ticker.receive()
         getUrl()?.let { fileURL ->
             val request = Request.Builder().url(fileURL).build()
-            ticker.receive()
             client.newCall(request).await().use { response ->
                 val inputStream = response.body()!!.byteStream()
                 withContext(Dispatchers.IO) {

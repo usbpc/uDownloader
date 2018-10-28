@@ -9,6 +9,7 @@ import kotlinx.coroutines.experimental.selects.select
 import xyz.usbpc.kotlin.utils.CounterActor
 import xyz.usbpc.kotlin.utils.WithCount
 import xyz.usbpc.kotlin.utils.createCounterActor
+import xyz.usbpc.kotlin.utils.unpackChannel
 import xyz.usbpc.uDownloader.hosts.OneFichierFile
 import java.lang.Exception
 import kotlin.coroutines.experimental.CoroutineContext
@@ -35,7 +36,7 @@ class DownloadManager(parent: Job, val num: Int = 2,
         returns = Channel(1)
         toDownloaders = Channel()
 
-        interveaver = channelInterveaver(listOf(fromCheckers, channelUnpacker(fromFolder)), combinedIngress)
+        interveaver = channelInterveaver(listOf(fromCheckers, unpackChannel(fromFolder)), combinedIngress)
 
         manager = downloaderManager(counter, combinedIngress, toDownloaders, returns)
 
@@ -63,21 +64,6 @@ class DownloadManager(parent: Job, val num: Int = 2,
     }
 
     fun cancel() = job.cancel()
-
-    private fun channelUnpacker(
-            input: ReceiveChannel<ReceiveChannel<OneFichierFile>>
-    ) : ReceiveChannel<OneFichierFile> {
-        val ret = Channel<OneFichierFile>()
-        launch {
-            for (channel in input) {
-                for (file in channel) {
-                    ret.send(file)
-                }
-            }
-            ret.close()
-        }
-        return ret
-    }
 
     private fun channelInterveaver(
             inputs: List<ReceiveChannel<OneFichierFile>>,
@@ -109,20 +95,25 @@ class DownloadManager(parent: Job, val num: Int = 2,
     ) = launch {
         while (isActive && (!ingress.isClosedForReceive || !returns.isClosedForReceive)) {
             select<WithCount<OneFichierFile>> {
-                if (!ingress.isClosedForReceive) {
-                    ingress.onReceive {
-                        counter.inc()
-                        WithCount(it)
-                    }
-                }
                 if (!returns.isClosedForReceive) {
                     returns.onReceive {
                         it.count++
                         it
                     }
                 }
+                if (!ingress.isClosedForReceive) {
+                    ingress.onReceive {
+                        counter.inc()
+                        WithCount(it)
+                    }
+                }
             }.let { current ->
-                toDownloaders.send(current)
+                if (current.count <= 50) {
+                    toDownloaders.send(current)
+                } else {
+                    println("DROPPED: Downloading \"${current.item}\" failed, too many retries!")
+                    counter.dec()
+                }
             }
         }
     }
